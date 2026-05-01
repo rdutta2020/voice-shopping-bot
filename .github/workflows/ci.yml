@@ -42,14 +42,15 @@ jobs:
         run: flake8 .
 
 # ────────────────────────────────────────────────────────────────────────────
-# Job 2 — Security (Snyk)
-# Scans requirements.txt for vulnerable packages.
+# Job 2 — Security (safety)
+# Scans requirements.txt for known CVEs using PyPI Safety DB.
+# Pure Python — no Docker, no external token required.
 # continue-on-error: true so a first-time scan with a pre-existing vuln
 # baseline doesn't block every PR while you triage. Set to false once the
 # baseline is clean.
 # ────────────────────────────────────────────────────────────────────────────
   security:
-    name: Security (Snyk)
+    name: Security (safety)
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -61,18 +62,11 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.txt
 
-      # Snyk needs the packages installed to resolve the dependency graph.
-      - name: Install backend dependencies
-        working-directory: backend
-        run: pip install -r requirements.txt
+      - name: Install safety
+        run: pip install safety
 
-      - name: Run Snyk scan
-        uses: snyk/actions/python@master
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          # Only fail on high/critical severity to avoid noise from low-risk deps.
-          args: --file=backend/requirements.txt --severity-threshold=high
+      - name: Run safety check
+        run: safety check -r backend/requirements.txt
 
 # ────────────────────────────────────────────────────────────────────────────
 # Job 3 — Accuracy Eval
