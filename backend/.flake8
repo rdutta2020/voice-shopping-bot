@@ -1,0 +1,14 @@
+[flake8]
+max-line-length = 130
+exclude =
+    venv,
+    .git,
+    __pycache__,
+    *.egg-info,
+    node_modules
+
+# E221 — multiple spaces before operator: intentional column alignment in
+#         dict literals and variable assignments throughout the codebase.
+# E302 — expected 2 blank lines: we use 1 between related model classes.
+# E305 — expected 2 blank lines after function definition at module level.
+extend-ignore = E221, E302, E305

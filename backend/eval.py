@@ -159,7 +159,7 @@ Special rules:
 - Mixed-intent inputs: be lenient; either reasonable intent is acceptable
 
 Respond ONLY with valid JSON (no markdown fences). Example:
-{"score": 8, "reason": "Intent correctly identified. Reply confirmed both items were added, though quantity formatting was slightly off."}"""
+{"score": 8, "reason": "Intent correct. Reply confirmed items were added."}"""
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -236,7 +236,7 @@ def run_eval() -> dict:
 
     n = len(EVAL_DATASET)
 
-    print(f"\n🧪  Voice Shopping Bot — LLM-as-Judge Eval")
+    print("\n🧪  Voice Shopping Bot — LLM-as-Judge Eval")
     print(f"    {n} cases  ·  server: {SERVER_URL}  ·  judge: {JUDGE_MODEL}\n")
     print(f"{'#':>2}  {'Input':<48}  {'Exp':>10}  {'Got':>10}  Score  ✓")
     print("─" * 86)
@@ -301,7 +301,7 @@ def run_eval() -> dict:
     avg_score       = round(total_score  / n, 2)
 
     print("─" * 86)
-    print(f"\n📊  Summary")
+    print("\n📊  Summary")
     print(f"    Intent accuracy  : {intent_hits}/{n}  ({intent_acc_pct}%)")
     print(f"    Avg judge score  : {avg_score} / 10")
     print(f"    Judge pass rate  : {judge_passes}/{n}  ({judge_pass_pct}%)  "

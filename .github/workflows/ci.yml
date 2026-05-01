@@ -1,0 +1,262 @@
+name: CI
+
+# Triggers: every push to main and every PR targeting main.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel an in-progress run for the same branch/PR when a new commit arrives.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+
+# ────────────────────────────────────────────────────────────────────────────
+# Job 1 — Lint
+# Fast gate. Runs first; eval waits on it to avoid wasting API quota.
+# ────────────────────────────────────────────────────────────────────────────
+jobs:
+  lint:
+    name: Lint (flake8)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install flake8
+        run: pip install flake8
+
+      - name: Run flake8
+        # Config lives in backend/.flake8 — flake8 discovers it automatically
+        # when run from inside that directory.
+        working-directory: backend
+        run: flake8 .
+
+# ────────────────────────────────────────────────────────────────────────────
+# Job 2 — Security (Snyk)
+# Scans requirements.txt for vulnerable packages.
+# continue-on-error: true so a first-time scan with a pre-existing vuln
+# baseline doesn't block every PR while you triage. Set to false once the
+# baseline is clean.
+# ────────────────────────────────────────────────────────────────────────────
+  security:
+    name: Security (Snyk)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      # Snyk needs the packages installed to resolve the dependency graph.
+      - name: Install backend dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Run Snyk scan
+        uses: snyk/actions/python@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          # Only fail on high/critical severity to avoid noise from low-risk deps.
+          args: --file=backend/requirements.txt --severity-threshold=high
+
+# ────────────────────────────────────────────────────────────────────────────
+# Job 3 — Accuracy Eval
+# Starts the FastAPI server, runs eval.py (15 cases × 2 Claude calls ≈ 4 min),
+# then fails the build if intent accuracy drops below 80 %.
+# Requires ANTHROPIC_API_KEY secret. Skips gracefully for fork PRs
+# (GitHub does not pass secrets to workflows from external forks).
+# ────────────────────────────────────────────────────────────────────────────
+  eval:
+    name: Accuracy Eval
+    runs-on: ubuntu-latest
+    needs: lint          # don't burn API quota if the code doesn't lint
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # Langfuse is optional — the server starts cleanly without these.
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_HOST:       ${{ secrets.LANGFUSE_HOST }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      # Start uvicorn in the background; save PID for clean teardown.
+      - name: Start FastAPI server
+        working-directory: backend
+        run: |
+          python -m uvicorn main:app --host 127.0.0.1 --port 8000 \
+            > /tmp/uvicorn.log 2>&1 &
+          echo $! > /tmp/uvicorn.pid
+          echo "Server PID: $(cat /tmp/uvicorn.pid)"
+
+      # Poll the /docs page (lightweight, no auth needed) for up to 30 s.
+      - name: Wait for server to be ready
+        run: |
+          echo "Waiting for FastAPI server..."
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/docs > /dev/null 2>&1; then
+              echo "✅ Server ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "❌ Server did not start in 30s — last log:"
+          tail -20 /tmp/uvicorn.log
+          exit 1
+
+      # Gracefully skip the eval for fork PRs that have no API key available.
+      - name: Run eval suite
+        working-directory: backend
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "::notice::ANTHROPIC_API_KEY not set — skipping eval (fork PR or missing secret)"
+            exit 0
+          fi
+          python3 eval.py
+
+      # Parse eval_report.json and exit 1 if accuracy < 80 %.
+      - name: Check accuracy threshold
+        working-directory: backend
+        run: |
+          if [ ! -f eval_report.json ]; then
+            echo "::notice::eval_report.json not found — eval was skipped"
+            exit 0
+          fi
+          python3 - <<'PYEOF'
+          import json, sys
+          with open("eval_report.json") as f:
+              report = json.load(f)
+          summary = report["summary"]
+          acc = summary["intent_accuracy_pct"]
+          avg = summary["avg_judge_score"]
+          n   = summary["total"]
+          print(f"Cases evaluated  : {n}")
+          print(f"Intent accuracy  : {acc}%")
+          print(f"Avg judge score  : {avg}/10")
+          print(f"Judge pass rate  : {summary['judge_pass_rate_pct']}%")
+          if acc < 80:
+              print(f"::error::Intent accuracy {acc}% is below the 80% threshold")
+              sys.exit(1)
+          print("✅ Accuracy threshold passed")
+          PYEOF
+
+      # Always stop the server, even if a previous step failed.
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f /tmp/uvicorn.pid ]; then
+            kill "$(cat /tmp/uvicorn.pid)" 2>/dev/null || true
+            echo "Server stopped"
+          fi
+
+      # Upload the full report as a build artifact for later inspection.
+      - name: Upload eval report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report-${{ github.run_id }}
+          path: backend/eval_report.json
+          if-no-files-found: ignore
+
+# ────────────────────────────────────────────────────────────────────────────
+# Job 4 — Claude Code Review
+# PR-only. Diffs the changed Python files, sends them to Claude for review,
+# and posts the result as a PR comment. Never blocks a merge — it's
+# informational. The comment is updated on each new push to the PR.
+# ────────────────────────────────────────────────────────────────────────────
+  code-review:
+    name: Claude Code Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    # Write permission is needed to post a PR comment.
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history is required for git diff origin/<base>...HEAD to work.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Only the anthropic SDK is needed — not the full backend requirements.
+      - name: Install review dependencies
+        run: pip install anthropic
+
+      - name: Run Claude code review
+        run: python3 .github/scripts/claude_review.py
+        env:
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+          BASE_REF:           ${{ github.base_ref }}
+          GITHUB_SERVER_URL:  ${{ github.server_url }}
+          GITHUB_REPOSITORY:  ${{ github.repository }}
+          GITHUB_RUN_ID:      ${{ github.run_id }}
+
+      # Post (or update) the review comment on the PR.
+      - name: Post review comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('claude_review.md')) {
+              console.log('claude_review.md not found — skipping comment');
+              return;
+            }
+            const body = fs.readFileSync('claude_review.md', 'utf8');
+
+            // Replace any previous Claude review comment on this PR so the
+            // thread stays clean instead of accumulating one comment per push.
+            const marker = '## 🤖 Claude Code Review';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const prev = comments.find(
+              c => c.user.login === 'github-actions[bot]' && c.body.startsWith(marker)
+            );
+            if (prev) {
+              await github.rest.issues.updateComment({
+                owner:      context.repo.owner,
+                repo:       context.repo.repo,
+                comment_id: prev.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner:        context.repo.owner,
+                repo:         context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

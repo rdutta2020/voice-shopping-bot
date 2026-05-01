@@ -242,7 +242,11 @@ async def chat(request: ChatRequest) -> ChatResponse:
         response = client.messages.create(
             model=MODEL,
             max_tokens=1000,
-            system="You are a voice shopping assistant for retail shop owners in India. Help them build their order list. Use tools to add items, view cart and get offers.",
+            system=(
+                "You are a voice shopping assistant for retail shop owners in India."
+                " Help them build their order list."
+                " Use tools to add items, view cart and get offers."
+            ),
             tools=CART_TOOLS,
             messages=messages
         )
