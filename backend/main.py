@@ -31,21 +31,6 @@ def parse_json_response(text: str) -> dict:
 
 # ── Request / Response models ──────────────────────────────────────────────
 
-class TextRequest(BaseModel):
-    text: str
-
-class IntentResponse(BaseModel):
-    intent: str        # "add_to_cart" | "get_offers" | "other"
-    confidence: str    # "high" | "medium" | "low"
-
-class CartItem(BaseModel):
-    item: str
-    quantity: float
-    unit: str
-
-class ExtractResponse(BaseModel):
-    items: list[CartItem]
-
 class ChatRequest(BaseModel):
     message: str
 
@@ -192,39 +177,7 @@ Respond ONLY with valid JSON. Example:
 
     return parse_json_response(raw).get("items", [])
 
-# ── Endpoint 1: Detect Intent ──────────────────────────────────────────────
-
-@app.post("/detect-intent")
-async def detect_intent(request: TextRequest) -> IntentResponse:
-    # Outer span gives the trace a meaningful name in Langfuse.
-    # _run_detect_intent creates a nested generation inside it.
-    ctx = langfuse.start_as_current_observation(
-        name="detect-intent", as_type="span", input=request.text
-    ) if langfuse else contextlib.nullcontext(None)
-
-    with ctx as span:
-        result = _run_detect_intent(request.text)
-        if span:
-            span.update(output=result)
-
-    return IntentResponse(**result)
-
-# ── Endpoint 2: Extract Items ──────────────────────────────────────────────
-
-@app.post("/extract-items")
-async def extract_items(request: TextRequest) -> ExtractResponse:
-    ctx = langfuse.start_as_current_observation(
-        name="extract-items", as_type="span", input=request.text
-    ) if langfuse else contextlib.nullcontext(None)
-
-    with ctx as span:
-        items = _run_extract_items(request.text)
-        if span:
-            span.update(output={"items": items})
-
-    return ExtractResponse(items=[CartItem(**i) for i in items])
-
-# ── Endpoint 3: Smart Chat with Tool Calling ───────────────────────────────
+# ── Endpoint 1: Smart Chat with Tool Calling ───────────────────────────────
 
 @app.post("/chat")
 async def chat(request: ChatRequest) -> ChatResponse:
