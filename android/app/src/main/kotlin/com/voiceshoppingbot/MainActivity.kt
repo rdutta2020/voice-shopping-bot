@@ -21,7 +21,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private lateinit var speechRecognizer: SpeechRecognizer
     private lateinit var tts: TextToSpeech
-    private lateinit var claude: ClaudeApiClient
+    private lateinit var backend: BackendApiClient
 
     private lateinit var btnMic: FloatingActionButton
     private lateinit var tvStatus: TextView
@@ -41,7 +41,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         tvResponse = findViewById(R.id.tvResponse)
 
         tts = TextToSpeech(this, this)
-        claude = ClaudeApiClient(BuildConfig.CLAUDE_API_KEY)
+        backend = BackendApiClient()
 
         setupSpeechRecognizer()
         btnMic.setOnClickListener { onMicTapped() }
@@ -90,7 +90,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     ?.firstOrNull() ?: return
                 tvTranscript.text = "You: $text"
-                askClaude(text)
+                askBackend(text)
             }
 
             override fun onPartialResults(partial: Bundle?) {}
@@ -114,11 +114,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         updateMicState()
     }
 
-    private fun askClaude(message: String) {
+    private fun askBackend(message: String) {
         setStatus("Thinking…")
         lifecycleScope.launch {
             try {
-                val reply = claude.sendMessage(message)
+                val reply = backend.sendMessage(message)
                 tvResponse.text = "Bot: $reply"
                 speak(reply)
             } catch (e: Exception) {
@@ -159,7 +159,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         super.onDestroy()
         speechRecognizer.destroy()
         tts.shutdown()
-        claude.shutdown()
+        backend.shutdown()
     }
 
     companion object {
