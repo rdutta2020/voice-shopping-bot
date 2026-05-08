@@ -29,14 +29,6 @@ def parse_json_response(text: str) -> dict:
     text = re.sub(r'\s*```$', '', text)
     return json.loads(text.strip())
 
-# ── Request / Response models ──────────────────────────────────────────────
-
-class ChatRequest(BaseModel):
-    message: str
-
-class ChatResponse(BaseModel):
-    reply: str
-
 # ── Tool definitions ───────────────────────────────────────────────────────
 
 CART_TOOLS = [
@@ -177,78 +169,7 @@ Respond ONLY with valid JSON. Example:
 
     return parse_json_response(raw).get("items", [])
 
-# ── Endpoint 1: Smart Chat with Tool Calling ───────────────────────────────
-
-@app.post("/chat")
-async def chat(request: ChatRequest) -> ChatResponse:
-    # The entire multi-turn interaction is one span. Token usage is accumulated
-    # across turns so we get the true total cost for this request.
-    ctx = langfuse.start_as_current_observation(
-        name="chat", as_type="span", input=request.message
-    ) if langfuse else contextlib.nullcontext(None)
-
-    with ctx as span:
-        messages = [{"role": "user", "content": request.message}]
-        total_input_tokens  = 0
-        total_output_tokens = 0
-
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=1000,
-            system=(
-                "You are a voice shopping assistant for retail shop owners in India."
-                " Help them build their order list."
-                " Use tools to add items, view cart and get offers."
-            ),
-            tools=CART_TOOLS,
-            messages=messages
-        )
-        total_input_tokens  += response.usage.input_tokens
-        total_output_tokens += response.usage.output_tokens
-
-        while response.stop_reason == "tool_use":
-            tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    print(f"Claude wants to call: {block.name} with {block.input}")
-                    result = handle_tool_call(block.name, block.input)
-                    tool_results.append({
-                        "type":        "tool_result",
-                        "tool_use_id": block.id,
-                        "content":     result
-                    })
-
-            messages.append({"role": "assistant", "content": response.content})
-            messages.append({"role": "user",      "content": tool_results})
-
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=1000,
-                system="You are a voice shopping assistant for retail shop owners in India.",
-                tools=CART_TOOLS,
-                messages=messages
-            )
-            total_input_tokens  += response.usage.input_tokens
-            total_output_tokens += response.usage.output_tokens
-
-        final_reply = next(
-            (block.text for block in response.content if hasattr(block, "text")),
-            "Done!"
-        )
-
-        if span:
-            # Record aggregate token usage and final reply on the span
-            span.update(
-                output=final_reply,
-                usage_details={
-                    "input":  total_input_tokens,
-                    "output": total_output_tokens,
-                },
-            )
-
-    return ChatResponse(reply=final_reply)
-
-# ── Endpoint 4: LangGraph Pipeline ────────────────────────────────────────
+# ── Endpoint: LangGraph Pipeline ──────────────────────────────────────────
 # Imported here (after handle_tool_call is defined) so graph.py can safely
 # do `from main import ...` without a circular-import error.
 
